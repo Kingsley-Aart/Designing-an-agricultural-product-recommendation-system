@@ -454,4 +454,4 @@ const AgriRecommender = () => {
   );
 };
 
-export default AgriRecommender;
+export default AgriRecommender; 
