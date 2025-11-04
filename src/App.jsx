@@ -1,7 +1,18 @@
-import React, { useState } from 'react';
-import { Search, Filter, Sprout, Droplet, Bug, Home, X, CreditCard, Smartphone, Building2, Check, ShoppingCart, Trash2, Menu, Plus, Minus } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Filter, Sprout, Droplet, Bug, Home, X, CreditCard, Smartphone, Building2, Check, ShoppingCart, Trash2, Menu, Plus, Minus, LogOut, User, Mail, Lock } from 'lucide-react';
+import { auth, db } from './firebase';
+import { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged } from 'firebase/auth';
+import { collection, addDoc, query, where, getDocs, serverTimestamp } from 'firebase/firestore';
 
 const AgriRecommender = () => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [authMode, setAuthMode] = useState('login');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [authError, setAuthError] = useState('');
+  
   const [activeTab, setActiveTab] = useState('home');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('all');
@@ -50,6 +61,70 @@ const AgriRecommender = () => {
     { question: "What's your main concern?", field: 'issue', options: ['Low Yield', 'Pests', 'Diseases', 'Soil Health'] }
   ];
 
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+      if (currentUser) {
+        loadUserCart(currentUser.uid);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const loadUserCart = async (userId) => {
+    try {
+      const cartData = localStorage.getItem(`cart_${userId}`);
+      if (cartData) {
+        setCart(JSON.parse(cartData));
+      }
+    } catch (error) {
+      console.error('Error loading cart:', error);
+    }
+  };
+
+  const saveCart = (newCart) => {
+    setCart(newCart);
+    if (user) {
+      localStorage.setItem(`cart_${user.uid}`, JSON.stringify(newCart));
+    }
+  };
+
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      await createUserWithEmailAndPassword(auth, email, password);
+      setEmail('');
+      setPassword('');
+      setName('');
+    } catch (error) {
+      setAuthError(error.message);
+    }
+  };
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+      setEmail('');
+      setPassword('');
+    } catch (error) {
+      setAuthError(error.message);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCart([]);
+      setActiveTab('home');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   const handleQuizAnswer = (value) => {
     const currentField = quizQuestions[quizStep].field;
     setQuizData({ ...quizData, [currentField]: value });
@@ -84,16 +159,21 @@ const AgriRecommender = () => {
   };
 
   const addToCart = (product) => {
+    if (!user) {
+      alert('Please login to add items to cart');
+      setAuthMode('login');
+      return;
+    }
     const existingItem = cart.find(item => item.id === product.id);
     if (existingItem) {
-      setCart(cart.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item));
+      saveCart(cart.map(item => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item));
     } else {
-      setCart([...cart, { ...product, quantity: 1 }]);
+      saveCart([...cart, { ...product, quantity: 1 }]);
     }
   };
 
   const updateQuantity = (productId, change) => {
-    setCart(cart.map(item => {
+    saveCart(cart.map(item => {
       if (item.id === productId) {
         const newQuantity = item.quantity + change;
         return newQuantity > 0 ? { ...item, quantity: newQuantity } : item;
@@ -103,13 +183,17 @@ const AgriRecommender = () => {
   };
 
   const removeFromCart = (productId) => {
-    setCart(cart.filter(item => item.id !== productId));
+    saveCart(cart.filter(item => item.id !== productId));
   };
 
   const getTotalPrice = () => cart.reduce((total, item) => total + (item.price * item.quantity), 0);
   const getTotalItems = () => cart.reduce((total, item) => total + item.quantity, 0);
 
   const handleCheckout = () => {
+    if (!user) {
+      alert('Please login to checkout');
+      return;
+    }
     if (cart.length === 0) {
       alert('Your cart is empty!');
       return;
@@ -118,14 +202,32 @@ const AgriRecommender = () => {
     setShowPayment(true);
   };
 
-  const handlePayment = () => {
-    if (paymentMethod) {
-      alert(`Payment of ₦${getTotalPrice().toLocaleString()} initiated via ${paymentMethod}! Order confirmed.`);
-      setCart([]);
+  const handlePayment = async () => {
+    if (!paymentMethod) {
+      alert('Please select a payment method');
+      return;
+    }
+    
+    try {
+      const orderData = {
+        userId: user.uid,
+        userEmail: user.email,
+        items: cart,
+        totalAmount: getTotalPrice(),
+        paymentMethod: paymentMethod,
+        status: 'pending',
+        createdAt: serverTimestamp()
+      };
+      
+      await addDoc(collection(db, 'orders'), orderData);
+      
+      alert(`Payment of ₦${getTotalPrice().toLocaleString()} initiated via ${paymentMethod}! Order confirmed and saved.`);
+      saveCart([]);
       setShowPayment(false);
       setPaymentMethod('');
-    } else {
-      alert('Please select a payment method');
+    } catch (error) {
+      console.error('Error saving order:', error);
+      alert('Error processing order. Please try again.');
     }
   };
 
@@ -146,6 +248,126 @@ const AgriRecommender = () => {
 
   const formatPrice = (price) => `₦${price.toLocaleString()}`;
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 via-green-50 to-yellow-50 flex items-center justify-center">
+        <div className="text-center">
+          <Sprout className="w-16 h-16 text-green-600 mx-auto mb-4 animate-pulse" />
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-amber-50 via-green-50 to-yellow-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-8">
+          <div className="text-center mb-8">
+            <Sprout className="w-16 h-16 text-green-600 mx-auto mb-4" />
+            <h1 className="text-3xl font-bold text-gray-800">AgriRecommend</h1>
+            <p className="text-gray-600 mt-2">Smart recommendations for your farm</p>
+          </div>
+
+          <div className="flex gap-2 mb-6">
+            <button
+              onClick={() => setAuthMode('login')}
+              className={`flex-1 py-2 rounded-lg font-semibold transition ${
+                authMode === 'login' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600'
+              }`}
+            >
+              Login
+            </button>
+            <button
+              onClick={() => setAuthMode('signup')}
+              className={`flex-1 py-2 rounded-lg font-semibold transition ${
+                authMode === 'signup' ? 'bg-green-600 text-white' : 'bg-gray-100 text-gray-600'
+              }`}
+            >
+              Sign Up
+            </button>
+          </div>
+
+          {authError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={authMode === 'login' ? handleLogin : handleSignup}>
+            {authMode === 'signup' && (
+              <div className="mb-4">
+                <label className="block text-gray-700 text-sm font-semibold mb-2">Full Name</label>
+                <div className="relative">
+                  <User className="absolute left-3 top-3 text-gray-400 w-5 h-5" />
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                    placeholder="Enter your name"
+                    required
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Email</label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-3 text-gray-400 w-5 h-5" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  placeholder="Enter your email"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-gray-700 text-sm font-semibold mb-2">Password</label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-3 text-gray-400 w-5 h-5" />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  placeholder="Enter your password"
+                  required
+                  minLength="6"
+                />
+              </div>
+              {authMode === 'signup' && (
+                <p className="text-xs text-gray-500 mt-1">Password must be at least 6 characters</p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              className="w-full bg-green-600 text-white py-3 rounded-lg hover:bg-green-700 transition font-semibold"
+            >
+              {authMode === 'login' ? 'Login' : 'Sign Up'}
+            </button>
+          </form>
+
+          <p className="text-center text-gray-600 text-sm mt-6">
+            {authMode === 'login' ? "Don't have an account? " : "Already have an account? "}
+            <button
+              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+              className="text-green-600 font-semibold hover:underline"
+            >
+              {authMode === 'login' ? 'Sign Up' : 'Login'}
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-amber-50 via-green-50 to-yellow-50">
       <header className="bg-gradient-to-r from-green-800 via-green-700 to-amber-800 text-white p-4 md:p-6 shadow-lg sticky top-0 z-40">
@@ -158,11 +380,18 @@ const AgriRecommender = () => {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-2 bg-green-700 px-3 py-2 rounded-lg">
+              <User className="w-4 h-4" />
+              <span className="text-sm">{user.email}</span>
+            </div>
             <button onClick={() => setShowCart(true)} className="relative p-2 hover:bg-green-700 rounded-lg transition">
               <ShoppingCart className="w-6 h-6" />
               {getTotalItems() > 0 && (
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center font-bold">{getTotalItems()}</span>
               )}
+            </button>
+            <button onClick={handleLogout} className="p-2 hover:bg-green-700 rounded-lg transition" title="Logout">
+              <LogOut className="w-6 h-6" />
             </button>
             <button onClick={() => setMobileMenuOpen(!mobileMenuOpen)} className="md:hidden p-2 hover:bg-green-700 rounded-lg">
               <Menu className="w-6 h-6" />
@@ -188,24 +417,26 @@ const AgriRecommender = () => {
       <main className="max-w-6xl mx-auto p-4 md:p-6">
         {activeTab === 'home' && (
           <div className="space-y-6 md:space-y-8">
-            <div className="bg-white rounded-xl shadow-lg p-6 md:p-8 text-center">
-              <h2 className="text-2xl md:text-3xl font-bold text-gray-800 mb-4">Welcome to AgriRecommend</h2>
-              <p className="text-gray-600 text-base md:text-lg mb-6 md:mb-8">Get personalized product recommendations for your farm</p>
+            <div className="bg-white rounded-xl shadow-lg p-6 md:p-8">
+              <div className="text-center mb-8">
+                <h2 className="text-2xl md:text-3xl font-bold text-gray-800 mb-2">Welcome back, {user.email}!</h2>
+                <p className="text-gray-600 text-base md:text-lg">Get personalized product recommendations for your farm</p>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
                 <div className="p-4 md:p-6 bg-green-50 rounded-lg border-2 border-green-200">
                   <Sprout className="w-10 h-10 md:w-12 md:h-12 text-green-600 mx-auto mb-3" />
-                  <h3 className="font-bold text-base md:text-lg mb-2">Quality Seeds</h3>
-                  <p className="text-gray-600 text-sm">High-yield varieties for optimal growth</p>
+                  <h3 className="font-bold text-base md:text-lg mb-2 text-center">Quality Seeds</h3>
+                  <p className="text-gray-600 text-sm text-center">High-yield varieties for optimal growth</p>
                 </div>
                 <div className="p-4 md:p-6 bg-blue-50 rounded-lg border-2 border-blue-200">
                   <Droplet className="w-10 h-10 md:w-12 md:h-12 text-blue-600 mx-auto mb-3" />
-                  <h3 className="font-bold text-base md:text-lg mb-2">Fertilizers</h3>
-                  <p className="text-gray-600 text-sm">Nutrient solutions for healthy crops</p>
+                  <h3 className="font-bold text-base md:text-lg mb-2 text-center">Fertilizers</h3>
+                  <p className="text-gray-600 text-sm text-center">Nutrient solutions for healthy crops</p>
                 </div>
                 <div className="p-4 md:p-6 bg-amber-50 rounded-lg border-2 border-amber-200">
                   <Bug className="w-10 h-10 md:w-12 md:h-12 text-amber-600 mx-auto mb-3" />
-                  <h3 className="font-bold text-base md:text-lg mb-2">Pesticides</h3>
-                  <p className="text-gray-600 text-sm">Effective crop protection solutions</p>
+                  <h3 className="font-bold text-base md:text-lg mb-2 text-center">Pesticides</h3>
+                  <p className="text-gray-600 text-sm text-center">Effective crop protection solutions</p>
                 </div>
               </div>
             </div>
